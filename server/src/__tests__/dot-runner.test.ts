@@ -452,7 +452,7 @@ describe("durable Dot Runner integration", () => {
     const appCall = vi.fn().mockResolvedValue({ status: "completed", result: { content: [{ type: "text", text: "synthetic gateway result" }] } });
     const gatewayTools = [{ name: "fixture:read_status", displayName: "Read fixture status", description: "Read a synthetic app", parametersSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "read" }];
     registerAssignedMcpGateway(db, { listToolsForNamedGateway: vi.fn().mockResolvedValue(gatewayTools), executeTool: appCall } as unknown as ToolGatewayService);
-    await db.update(agents).set({ adapterConfig: { ...f.agent.adapterConfig, dotWorkspaceAccess: true } }).where(eq(agents.id, f.agent.id));
+    await db.update(agents).set({ adapterConfig: { ...f.agent.adapterConfig, dotWorkspaceAccess: true, dotAttachmentAccess: true } }).where(eq(agents.id, f.agent.id));
     const resultPromise = executePaperclipNativeSession({ db, execution, dotWorkspaceRoot: root, runnerInstanceId: prepared.runnerInstanceId,
       runnerEnvironment: { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3217/mcp/gateways/dot-fixture", PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-gateway-secret" },
       useRunnerd: true, turnTimeoutMs: 45000, onEvent: async event => { observed.push(event); }, onLog: async () => {} });
@@ -481,6 +481,10 @@ describe("durable Dot Runner integration", () => {
       await f.broker.operation(f.principal, assignment!.id, missingReadId, "tool", { name: "workspace_read", arguments: { path: "missing-fixture.txt", offset: 0 } });
       await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, missingReadId)).toMatchObject({ status: "completed", isError: true, result: { outcome: "failed", code: "runner_bridge_file_not_found" } }), { timeout: 10000 });
       // A definite read failure must not poison later calls or finalization.
+      const attachmentListId = randomUUID();
+      expect((work.tools as Array<{ operationId: string }>).some(tool => tool.operationId === "read_task_attachment")).toBe(true);
+      await f.broker.operation(f.principal, assignment!.id, attachmentListId, "tool", { name: "list_task_attachments", arguments: {} });
+      await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, attachmentListId)).toMatchObject({ status: "completed", isError: false, result: { attachments: [] } }), { timeout: 10000 });
       const appRequestId = randomUUID();
       await f.broker.operation(f.principal, assignment!.id, appRequestId, "tool", { name: app.operationId, arguments: {} });
       await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, appRequestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });

@@ -22,8 +22,8 @@ describe("native hire runtime inheritance", () => {
     expect(inherited).not.toHaveProperty("env");
   });
 
-  it("inherits Dot billing acknowledgement without copying a live binding or workspace access", () => {
-    expect(inheritNativeRunnerAdapterConfig({ provider: "openai_dot", allowUnmeteredProvider: true, dotBindingId: "parent-binding", dotWorkspaceAccess: true }))
+  it("inherits Dot billing acknowledgement without copying a live binding, attachment access, or workspace access", () => {
+    expect(inheritNativeRunnerAdapterConfig({ provider: "openai_dot", allowUnmeteredProvider: true, dotBindingId: "parent-binding", dotWorkspaceAccess: true, dotAttachmentAccess: true }))
       .toEqual({ provider: "openai_dot", allowUnmeteredProvider: true });
   });
 

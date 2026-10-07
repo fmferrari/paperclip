@@ -440,7 +440,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         const [company] = await tx.select().from(companies).where(eq(companies.id, binding.companyId));
         if (!access.user || !membership || membership.membershipRole === "viewer" || !company || company.status === "archived") throw invalidGrant();
         return { company: { id: company.id, name: company.name }, agent: { id: agent.id, name: agent.name },
-          permissions: "Start and accept work as this agent, coordinate permitted tasks and people, read assigned skills, and use assigned app tools. Workspace files and sandboxed commands require the agent’s separate workspace setting. No board account or other-company access.",
+          permissions: "Start and accept work as this agent, coordinate permitted tasks and people, read assigned skills, and use assigned app tools. Reading assigned task attachment contents sends those contents to OpenAI and requires the agent’s separate attachment setting. Workspace files and sandboxed commands require the agent’s separate workspace setting. No board account or other-company access.",
           accessDuration: "Ongoing until revoked. Reconnect after 30 days without refreshing the connection.",
           pairingExpiresAt: binding.pairingExpiresAt!.toISOString() };
       });

@@ -1,3 +1,4 @@
+import { agents } from "@paperclipai/db";
 import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { CURSOR_DISTRIBUTION_PINS, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
@@ -10923,6 +10924,10 @@ async function createRunnerdBackendWithinSessionClaim(
         workMode: input.execution.task.workMode,
       })
     : undefined;
+  const dotAttachmentActor = input.execution.provider.kind === "openai_dot"
+    ? await input.db.select({ config: agents.adapterConfig }).from(agents).where(and(
+        eq(agents.id, input.execution.binding.agentId), eq(agents.companyId, input.execution.binding.companyId),
+      )).limit(1).then(rows => rows[0]) : undefined;
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     ...(nativeReview ? { nativeReview } : {}),
     connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
@@ -10939,6 +10944,7 @@ async function createRunnerdBackendWithinSessionClaim(
     workMode: input.execution.task.workMode,
     runtimeContext: "runtimeContext" in input.execution ? input.execution.runtimeContext : undefined,
     workspaceBridge: input.execution.provider.kind === "openai_dot" && !!input.dotWorkspaceRoot,
+    taskAttachmentRead: dotAttachmentActor?.config.dotAttachmentAccess === true,
     assertBridgeAuthority: input.execution.provider.kind === "openai_dot" ? () => dotRunnerBroker(input.db).assertRunAuthority(input.execution as import("../../vendor/paperclip-runner/index.js").NativeExecutionInputV6) : undefined,
     workspaceRoot: input.dotWorkspaceRoot ?? remoteTarget?.remoteCwd ?? input.execution.workspace.cwd ?? undefined,
     executionTargetKind: target.kind,

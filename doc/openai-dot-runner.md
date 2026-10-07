@@ -226,7 +226,7 @@ establishes that the external Dot has started work.
 
 Assigned MCP gateway relay is exercised through real Rust and authenticated
 Runner authority with a synthetic gateway. No live third-party app account
-call is claimed. Automatic inbound attachment staging remains disabled.
+call is claimed. Inbound task file contents are available through an explicit attachment-reading grant; the server does not automatically stage or send files.
 
 Inspect these persisted synthetic acceptance records in the test-drive:
 
@@ -348,13 +348,24 @@ server-side authorization.
 | Projects | `create_project`, `list_projects`, `list_project_repositories` |
 | Apps and control-plane APIs | `connections_search`, `connection_request`, `search_api`, `call_api`, `hire_agent`; assigned gateway tools are discovered from the actual catalog, or via `paperclip_search_assigned_tools` / `paperclip_call_assigned_tool` for large catalogs |
 | Workspace and output | `workspace_list`, `workspace_read`, `workspace_write`, `workspace_run`, `register_deliverable` |
+| Task attachments | `list_task_attachments`, `read_task_attachment` when **Read task attachments** is enabled |
 | Bound chat inputs | `list_chat_attachments`, `reuse_chat_attachment`; `read_chat_attachment` and `read_current_wake_comments` require verified server bindings |
 | Feedback | `submit_complaint`, `submit_suggestion` |
 | Completion | `paperclip_finish`, `paperclip_block`; a separate review run offers its limited read catalog and `resolve_review` |
 
-Dot does not automatically stage inbound task attachments. An attachment reader
-is available only when a verified read scope is supplied. Assigned skills,
-workspace files and registered deliverables use the separate paths above.
+Enable **Read task attachments** on the Dot agent to expose `list_task_attachments`
+and `read_task_attachment` on new assignments. This setting is off by default,
+requires operator consent, and sends file contents to OpenAI. It is independent
+of **Workspace files and commands** and is never inherited by a hired teammate.
+Reads are restricted to the current run's assigned task and company, recheck
+live run/binding/setting authority before returning, verify byte size and
+SHA-256, and return at most 12,000 bytes per page from files up to 16 MiB.
+Text pages preserve UTF-8 boundaries; binary files use base64. Pass the returned
+SHA-256 on subsequent pages to detect changes. Missing, oversized or corrupt
+files return terminal errors. Read audit entries contain metadata, never file
+contents. Revocation blocks further reads, but cannot withdraw bytes already
+sent to OpenAI. Files and filenames remain untrusted input. There is no public
+attachment URL or Paperclip credential exposed to Dot.
 
 A plugin upgraded during a running Dot conversation can retain an old top-level
 tool catalog. Refresh its tools in ChatGPT plugin settings and reattach it.

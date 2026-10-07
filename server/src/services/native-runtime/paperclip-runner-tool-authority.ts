@@ -1,3 +1,4 @@
+import { TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
 import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { readTaskQuestionContext } from "../issue-question-context.js";
@@ -135,6 +136,8 @@ type Binding = {
   workMode?: "standard" | "planning" | "ask";
   workspaceRoot?: string;
   workspaceBridge?: boolean;
+  /** Operator-approved Dot attachment access, pinned when the turn opens. */
+  taskAttachmentRead?: boolean;
   runtimeContext?: NativeRuntimeContextSnapshot;
   assertBridgeAuthority?: () => Promise<void>;
   executionTargetKind?: "local" | "remote";
@@ -273,6 +276,7 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     if (this.binding.chatAttachmentReadScope) definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
+    if (this.binding.taskAttachmentRead) definitions.push(...TASK_ATTACHMENT_DEFINITIONS);
     definitions.push(...runnerBridgeDefinitions({ workspace: !!this.binding.workspaceRoot && this.binding.workspaceBridge === true, skills: !!this.binding.runtimeContext, api: runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled), mode: workMode }));
     const connectionTools = [...RUNTIME_CONNECTION_TOOL_DEFINITIONS,
       ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools)];
@@ -291,6 +295,25 @@ export class PaperclipRunnerToolAuthority {
       if (!NATIVE_REVIEW_READ_TOOLS.has(call.tool)) {
         throw forbidden("This review run may only inspect the assigned task and resolve its review.");
       }
+    }
+    if (Object.hasOwn(TASK_ATTACHMENT_SCHEMAS, call.tool)) {
+      const authorize = async () => {
+        const current = await this.#boundContext();
+        if (!this.binding.taskAttachmentRead || current.actor.adapterType !== "paperclip_runner"
+          || current.actor.adapterConfig?.provider !== "openai_dot" || current.actor.adapterConfig?.dotAttachmentAccess !== true)
+          throw forbidden("Dot task attachment reading was not enabled or was disabled");
+        await this.binding.assertBridgeAuthority?.();
+      };
+      await authorize();
+      const schema = TASK_ATTACHMENT_SCHEMAS[call.tool as keyof typeof TASK_ATTACHMENT_SCHEMAS];
+      const parsed = schema.safeParse(call.arguments);
+      if (!parsed.success) return { outcome: "failed", code: "runner_attachment_invalid_arguments", message: "Arguments do not match this tool's advertised schema." };
+      return settleRunnerBridgeRead(async () => {
+        if (call.tool === "read_task_attachment") return readTaskAttachment({ db: this.db, binding: this.binding, arguments: parsed.data, storage: this.binding.storage, authorize });
+        const result = await listTaskAttachments(this.db, this.binding, (parsed.data as { after?: string }).after);
+        await authorize();
+        return result;
+      });
     }
     if (RUNNER_BRIDGE_SCHEMAS.has(call.tool)) {
       await this.#boundContext();

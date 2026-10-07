@@ -230,7 +230,8 @@ function createBroker(db: Db) {
         assignment: state?.assignment ?? null,
         idle: { read: ["paperclip_dot_capabilities", "paperclip_dot_tasks", "paperclip_dot_inbox"],
           start: "paperclip_dot_request_turn", instruction: "You can start work without an existing task. Call paperclip_dot_request_turn with the user's request and a stable UUID. Drain the inbox, read and accept the assignment, then use its full catalog through paperclip_dot_tool. Task tools run as this agent under normal permissions, never as the owner." },
-        runtime: { skills: "pinned_read", mcp: "assigned_gateway", workspace: agent!.adapterConfig?.dotWorkspaceAccess === true ? "sandboxed_tool_bridge" : "disabled",
+        runtime: { skills: "pinned_read", mcp: "assigned_gateway", taskAttachments: agent!.adapterConfig?.dotAttachmentAccess === true ? "assigned_task_read" : "disabled",
+          attachmentPrerequisite: "Enable task attachment reading on this Dot agent to send verified contents of its current assigned task files to OpenAI. This does not enable workspace commands.", workspace: agent!.adapterConfig?.dotWorkspaceAccess === true ? "sandboxed_tool_bridge" : "disabled",
           workspacePrerequisite: "Enable workspace access on the Dot agent to read/write files and run sandboxed commands in its assigned workspace.",
           operationLimit: 4000, leaseRenewal: "paperclip_dot_renew", maximumAssignmentHours: 24 },
         limitations: ["OpenAI manages the model", "Token usage and provider cost unavailable", "Paperclip can revoke authority; global external stop is unconfirmed"] };

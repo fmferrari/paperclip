@@ -349,6 +349,45 @@ export class ToolGatewayHttpError extends Error {
   }
 }
 
+function replayedInvocationFailure(
+  invocation: Pick<
+    typeof toolInvocations.$inferSelect,
+    "id" | "status" | "errorCode" | "errorMessage"
+  >,
+): ToolGatewayHttpError | null {
+  const reasonCode = invocation.errorCode ?? "tool_execution_failed";
+  const message = invocation.errorMessage ?? "The previous tool invocation did not complete successfully.";
+  switch (invocation.status) {
+    case "failed":
+      return new ToolGatewayHttpError(502, message, reasonCode, {
+        invocationId: invocation.id,
+        replayed: true,
+      });
+    case "timed_out":
+      return new ToolGatewayHttpError(504, message, reasonCode, {
+        invocationId: invocation.id,
+        replayed: true,
+      });
+    case "rate_limited":
+      return new ToolGatewayHttpError(429, message, reasonCode, {
+        invocationId: invocation.id,
+        replayed: true,
+      });
+    case "denied":
+      return new ToolGatewayHttpError(403, message, reasonCode, {
+        invocationId: invocation.id,
+        replayed: true,
+      });
+    case "cancelled":
+      return new ToolGatewayHttpError(409, message, reasonCode, {
+        invocationId: invocation.id,
+        replayed: true,
+      });
+    default:
+      return null;
+  }
+}
+
 interface ExecuteGatewayToolInput {
   sessionToken: string;
   gatewayId?: string | null;
@@ -10485,6 +10524,26 @@ export function createToolGatewayService(
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : false;
         if (recorded.replayed && !retryingSlackRateLimit) {
+          const replayFailure = replayedInvocationFailure(recorded.invocation);
+          if (replayFailure) {
+            await writeAudit({
+              session,
+              companyId: session.companyId,
+              agentId: session.agentId,
+              runId: session.runId,
+              issueId: session.issueId,
+              action: "tool_gateway.call_failed",
+              details: {
+                invocationId,
+                decision: "deny",
+                reasonCode: replayFailure.reasonCode,
+                tool: tool.name,
+                ...toolAuditMetadata(tool),
+                replayed: true,
+              },
+            });
+            throw replayFailure;
+          }
           await writeAudit({
             session,
             companyId: session.companyId,

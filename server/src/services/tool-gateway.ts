@@ -10551,7 +10551,7 @@ export function createToolGatewayService(
           // Only a provider-confirmed Slack 429 with a future retryAt is an
           // intentional no-op. Policy rate limits and other failures remain
           // visible as errors.
-          const replayFailure = slackRateLimitRetry === "deferred"
+          const replayFailure = slackRateLimitRetry === "deferred" || tool.providerType === "paperclip_slack_chat"
             ? null
             : replayedInvocationFailure(replayedInvocation);
           if (replayFailure) {

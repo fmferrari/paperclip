@@ -10524,7 +10524,12 @@ export function createToolGatewayService(
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : false;
         if (recorded.replayed && !retryingSlackRateLimit) {
-          const replayFailure = replayedInvocationFailure(recorded.invocation);
+          // Slack has its own retry-at gate. A replay before that deadline is
+          // an intentional no-op; keep that policy instead of surfacing the
+          // stored rate-limit result as a terminal gateway error.
+          const replayFailure = recorded.invocation.status === "rate_limited" && tool.providerType === "paperclip_slack_chat"
+            ? null
+            : replayedInvocationFailure(recorded.invocation);
           if (replayFailure) {
             await writeAudit({
               session,

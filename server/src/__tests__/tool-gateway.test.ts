@@ -2106,7 +2106,7 @@ rl.on("line", (line) => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
-    await createRemoteMcpTool(db, company.id, {
+    const { connection } = await createRemoteMcpTool(db, company.id, {
       applicationKey: "failed-replay",
       toolName: "write_record",
       riskLevel: "write",
@@ -2134,6 +2134,10 @@ rl.on("line", (line) => {
       () => { throw new Error("Expected the first remote MCP call to fail"); },
       (error) => expectGatewayError(error, 502, "mcp_remote_fetch_failed"),
     );
+    // The failed transport marks this connection unhealthy and hides its tool.
+    // Restore it to model a subsequent call after the operator/provider recovers.
+    await db.update(toolConnections).set({ healthStatus: "ok" })
+      .where(eq(toolConnections.id, connection.id));
     await call().then(
       () => { throw new Error("Expected replay to preserve the original failure"); },
       (error) => {

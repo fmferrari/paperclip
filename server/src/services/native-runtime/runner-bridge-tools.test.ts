@@ -4,7 +4,7 @@ import { materializeAsset } from "./runtime-context.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { executeWorkspaceTool, readAssignedSkill, runnerBridgeDefinitions, workspaceCommandSandboxAvailable } from "./runner-bridge-tools.js";
+import { executeWorkspaceTool, readAssignedSkill, runnerBridgeDefinitions, workspaceCommandSandboxAvailable, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const root = async () => { const directory = await mkdtemp(join(tmpdir(), "dot-bridge-")); roots.push(directory); return directory; };
@@ -23,6 +23,25 @@ describe("Runner workspace bridge", () => {
     await symlink(outside, join(directory, "outside"));
     await expect(executeWorkspaceTool(directory, "workspace_read", { path: "outside/private.txt" }, authorize)).rejects.toThrow("symlink");
   });
+  it("serializes overlapping writes so only one observed hash can commit", async () => {
+    const directory = await root();
+    const initial = await executeWorkspaceTool(directory, "workspace_write", { path: "shared.txt", text: "initial", expectedSha256: null }, authorize) as any;
+    let entered!: () => void, release!: () => void, authorizations = 0;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const first = executeWorkspaceTool(directory, "workspace_write", { path: "shared.txt", text: "first", expectedSha256: initial.sha256 }, async () => {
+      if (++authorizations === 2) { entered(); await gate; }
+    });
+    await waiting;
+    const second = executeWorkspaceTool(directory, "workspace_write", { path: "shared.txt", text: "second", expectedSha256: initial.sha256 }, authorize);
+    const observed = Promise.allSettled([first, second]);
+    release();
+    const results = await observed;
+    expect(results[0].status).toBe("fulfilled");
+    expect(results[1]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: "runner_workspace_write_conflict" }) });
+    expect(await readFile(join(directory, "shared.txt"), "utf8")).toBe("first");
+  });
+
   it.skipIf(!workspaceCommandSandboxAvailable())("runs useful commands but denies files outside the workspace and injected credentials", async () => {
     const directory = await root(), outside = await root();
     const secret = join(outside, "private.txt"); await writeFile(secret, "PRIVATE");
@@ -49,6 +68,14 @@ describe("Runner workspace bridge", () => {
     await expect(readAssignedSkill(context, { skill: "assigned", path: "../private" })).rejects.toThrow();
     await expect(readAssignedSkill(context, { skill: "assigned", path: "not-pinned.txt" })).rejects.toThrow("not_pinned");
     await expect(readAssignedSkill({ ...context, skills: [{ ...context.skills[0], bundle: { ...bundle, manifestDigest: createHash("sha256").update("different").digest("hex") } }] }, { skill: "assigned" })).rejects.toThrow("manifest_digest");
+  });
+
+  it("settles missing-file reads without disclosing host paths or leaving an unknown effect", async () => {
+    const directory = await root();
+    const result = await settleRunnerBridgeRead(() => executeWorkspaceTool(directory, "workspace_read", { path: "missing.txt" }, authorize));
+    expect(result).toMatchObject({ outcome: "failed", code: "runner_bridge_file_not_found" });
+    expect(JSON.stringify(result)).not.toContain(directory);
+    expect(await settleRunnerBridgeRead(async () => { throw new Error("runner_skill_file_not_pinned"); })).toMatchObject({ outcome: "failed", code: "runner_skill_file_not_pinned" });
   });
 
   it("advertises only available tools in the current work mode", () => {

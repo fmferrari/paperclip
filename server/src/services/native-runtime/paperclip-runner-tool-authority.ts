@@ -1,4 +1,4 @@
-import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool } from "./runner-bridge-tools.js";
+import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { readTaskQuestionContext } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
@@ -295,7 +295,9 @@ export class PaperclipRunnerToolAuthority {
     if (RUNNER_BRIDGE_SCHEMAS.has(call.tool)) {
       await this.#boundContext();
       if (!this.definitions().some(definition => definition.name === call.tool)) throw forbidden("Tool is not available to this run");
-      const input = RUNNER_BRIDGE_SCHEMAS.get(call.tool)!.parse(call.arguments) as Record<string, any>;
+      const parsed = RUNNER_BRIDGE_SCHEMAS.get(call.tool)!.safeParse(call.arguments);
+      if (!parsed.success) return { outcome: "failed", code: "runner_bridge_invalid_arguments", message: "Arguments do not match this tool's advertised schema." };
+      const input = parsed.data as Record<string, any>;
       if (call.tool.startsWith("workspace_")) {
         const authorize = async () => { const current = await this.#boundContext();
           if (current.actor.adapterConfig?.dotWorkspaceAccess !== true) throw forbidden("Dot workspace access was disabled");
@@ -304,7 +306,7 @@ export class PaperclipRunnerToolAuthority {
         };
         await authorize();
         const execute = () => executeWorkspaceTool(this.binding.workspaceRoot!, call.tool, input, authorize);
-        return ["workspace_write", "workspace_run"].includes(call.tool) ? this.#bridgeMutation(call, execute) : execute();
+        return ["workspace_write", "workspace_run"].includes(call.tool) ? this.#bridgeMutation(call, execute) : settleRunnerBridgeRead(execute);
       }
       if (call.tool === "get_identity") {
         const { actor, run } = await this.#boundContext();
@@ -316,7 +318,7 @@ export class PaperclipRunnerToolAuthority {
         .where(and(eq(companyMemberships.companyId, this.binding.companyId), eq(companyMemberships.principalType, "user"), eq(companyMemberships.status, "active"), input.after ? sql`${authUsers.id} > ${input.after}` : undefined))
         .orderBy(authUsers.id).limit(input.limit);
       if (call.tool === "list_assigned_skills") return this.binding.runtimeContext!.skills.map(skill => ({ key: skill.key, name: skill.runtimeName, versionId: skill.versionId, digest: skill.bundle.digest }));
-      if (call.tool === "read_assigned_skill") return readAssignedSkill(this.binding.runtimeContext!, input);
+      if (call.tool === "read_assigned_skill") return settleRunnerBridgeRead(() => readAssignedSkill(this.binding.runtimeContext!, input));
       const paths: Record<string, [string, string]> = { get_task: ["GET", "/api/issues/{id}"], comment_on_task: ["POST", "/api/issues/{id}/comments"],
         list_task_documents: ["GET", "/api/issues/{id}/documents"], read_task_document: ["GET", "/api/issues/{id}/documents/{key}"], write_task_document: ["PUT", "/api/issues/{id}/documents/{key}"] };
       const [method, path] = paths[call.tool]!;

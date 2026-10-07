@@ -452,7 +452,8 @@ describe("durable Dot Runner integration", () => {
     const appCall = vi.fn().mockResolvedValue({ status: "completed", result: { content: [{ type: "text", text: "synthetic gateway result" }] } });
     const gatewayTools = [{ name: "fixture:read_status", displayName: "Read fixture status", description: "Read a synthetic app", parametersSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "read" }];
     registerAssignedMcpGateway(db, { listToolsForNamedGateway: vi.fn().mockResolvedValue(gatewayTools), executeTool: appCall } as unknown as ToolGatewayService);
-    const resultPromise = executePaperclipNativeSession({ db, execution, runnerInstanceId: prepared.runnerInstanceId,
+    await db.update(agents).set({ adapterConfig: { ...f.agent.adapterConfig, dotWorkspaceAccess: true } }).where(eq(agents.id, f.agent.id));
+    const resultPromise = executePaperclipNativeSession({ db, execution, dotWorkspaceRoot: root, runnerInstanceId: prepared.runnerInstanceId,
       runnerEnvironment: { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3217/mcp/gateways/dot-fixture", PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-gateway-secret" },
       useRunnerd: true, turnTimeoutMs: 45000, onEvent: async event => { observed.push(event); }, onLog: async () => {} });
     // Attach a handler immediately: a bootstrap error must never become an unhandled rejection.
@@ -470,12 +471,16 @@ describe("durable Dot Runner integration", () => {
       expect(work.status).toBe("offered");
       expect(observed.filter(event => event.eventType === "turn.started")).toHaveLength(0);
       expect(JSON.stringify(work)).not.toContain(root);
-      expect((work.tools as Array<{ operationId: string }>).some(tool => tool.operationId === "register_deliverable")).toBe(false);
+      expect((work.tools as Array<{ operationId: string }>).some(tool => tool.operationId === "register_deliverable")).toBe(true);
       expect(await f.broker.operation(f.principal, assignment!.id, randomUUID(), "tool", { name: "write_document", arguments: {} })).toMatchObject({ status: "rejected" });
       await f.broker.operation(f.principal, assignment!.id, randomUUID(), "accept", {});
       expect(JSON.stringify(work)).not.toContain("fixture-gateway-secret");
       const app = (work.tools as Array<{ operationId: string }>).find(tool => tool.operationId.startsWith("app_"))!;
       expect(app).toBeTruthy();
+      const missingReadId = randomUUID();
+      await f.broker.operation(f.principal, assignment!.id, missingReadId, "tool", { name: "workspace_read", arguments: { path: "missing-fixture.txt", offset: 0 } });
+      await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, missingReadId)).toMatchObject({ status: "completed", isError: true, result: { outcome: "failed", code: "runner_bridge_file_not_found" } }), { timeout: 10000 });
+      // A definite read failure must not poison later calls or finalization.
       const appRequestId = randomUUID();
       await f.broker.operation(f.principal, assignment!.id, appRequestId, "tool", { name: app.operationId, arguments: {} });
       await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, appRequestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });

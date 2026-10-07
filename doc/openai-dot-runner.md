@@ -107,7 +107,10 @@ Dot invokes catalogued tools through `paperclip_dot_tool`. Every operation uses
 a UUID request ID. A pending response is reconciled with
 `paperclip_dot_operation_status` or retried with **the same ID and arguments**.
 Changing arguments under the same ID is rejected. An unknown write must never
-be retried under a new ID.
+be retried under a new ID. Idle intake returns its assignment when available.
+If admission is still pending, retry `paperclip_dot_request_turn` with the same
+ID and exact prompt to inspect the same intake; no second task or human nudge
+is required. Events also notify work queued behind another active assignment.
 
 Dot calls `paperclip_finish` or `paperclip_block` through the tool bridge, then
 ends the external turn with `paperclip_dot_finish` using exactly the accepted
@@ -136,7 +139,7 @@ tools; those narrow inbox reads leave its task cursor unchanged.
   activity is shown in the connection panel as requiring attention.
 - No mounted workspace, selectable model, native Dot thread identifier,
   provider usage or provider cost. Text deliverables use Paperclip documents.
-  Assigned skills are read from verified pinned bundles; app tools use the assigned MCP gateway. The optional workspace bridge provides files, sandboxed commands, and verified downloadable artifacts without mounting files into OpenAI. Commands require macOS sandbox-exec or Linux bubblewrap; there is no unrestricted fallback. Networking and injected credentials are excluded from commands; use assigned app tools for services.
+  Assigned skills are read from verified pinned bundles; app tools use the assigned MCP gateway. The optional workspace bridge provides files, sandboxed commands, and verified downloadable artifacts without mounting files into OpenAI. Workspace calls serialize within the local controller, including hash checks and writes, so overlapping edits cannot both commit against the same observed hash. Definite file/skill read failures return bounded error receipts rather than leaving tool calls pending. Commands require macOS sandbox-exec or Linux bubblewrap; there is no unrestricted fallback. Networking and injected credentials are excluded from commands; use assigned app tools for services.
 - Cancel, pause, reassignment and revocation fence Paperclip authority. They do
   not confirm that Dot stopped all external activity. A fence acknowledgement
   records receipt only.
@@ -200,6 +203,30 @@ structured completion. The document contains the exact synthetic nonce and
 has one revision authored by the Dot agent. The ordinary native finalizer
 committed **Done**, with a succeeded run, exit code 0, no remaining work, and
 no verification caveats. Provider usage and cost remained null.
+
+The expanded catalog was also exercised by the real Dot. It created a task
+assigned to the verified human owner, read a pinned skill, wrote an attributed
+cross-task comment and task document, ran a sandboxed command, incorporated a
+follow-up comment, renewed its lease, and registered a downloadable report.
+The report's downloaded bytes and SHA-256 matched its receipt. An initially
+missing fixture exposed a read exception that left the operation pending and
+prevented turn closure. The test operator cancelled that run; Dot acknowledged
+its fence without repeating its work.
+
+After the fix, Dot initiated a new intake with `paperclip_dot_request_turn`,
+created **hello from idle** for the human owner, observed a terminal
+`runner_bridge_file_not_found` error, and continued successfully. It wrote,
+read, executed, and registered the 20-byte `idle-runner-verified` proof. Its
+ordinary run succeeded with exit code 0 and the finalizer committed **Done**.
+The offer needed a direct inbox check because no automation wake was observed
+in that conversation. Intake now returns an available assignment and instructs
+same-request polling while admission is pending. The earlier event-only
+readiness and assignment proof remains valid; webhook delivery alone never
+establishes that the external Dot has started work.
+
+Assigned MCP gateway relay is exercised through real Rust and authenticated
+Runner authority with a synthetic gateway. No live third-party app account
+call is claimed. Automatic inbound attachment staging remains disabled.
 
 Inspect these persisted synthetic acceptance records in the test-drive:
 

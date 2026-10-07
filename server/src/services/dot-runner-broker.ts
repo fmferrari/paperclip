@@ -267,7 +267,16 @@ function createBroker(db: Db) {
         return issue;
       });
       const wake = await this.requestWork(principal, task.id, requestId);
-      return { ...wake, issueId: task.id, identifier: task.identifier, instruction: "Read the mailbox after its event. Accept the assignment and use its catalog. This intake task supplies normal run authority; no human needs to create a preliminary task." };
+      const deadline = Date.now() + 1500;
+      let assignment: { id: string; status: string } | undefined;
+      if (wake.runId) do {
+        [assignment] = await db.select({ id: assignments.id, status: assignments.status }).from(assignments).where(and(
+          eq(assignments.runId, wake.runId), eq(assignments.companyId, b.companyId), eq(assignments.bindingId, b.id),
+          eq(assignments.bindingGeneration, b.generation), inArray(assignments.status, ["offered", "accepted"]), gt(assignments.expiresAt, new Date()))).limit(1);
+        if (!assignment) await new Promise(resolve => setTimeout(resolve, 50));
+      } while (!assignment && Date.now() < deadline);
+      return { ...wake, issueId: task.id, identifier: task.identifier, assignment: assignment ?? null,
+        instruction: "Drain the inbox now. If assignment is present, read and accept it, then use its catalog. If admission is still pending, retry paperclip_dot_request_turn with exactly the same requestId and prompt to check this intake; never create a second request. Events also notify queued work. This intake supplies normal run authority; no human needs to create a preliminary task." };
     },
     async requestWork(principal: McpPrincipal, issueId: string, requestId: string) {
       const b = await principalBinding(principal);

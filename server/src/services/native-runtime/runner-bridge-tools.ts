@@ -70,7 +70,31 @@ export async function readAssignedSkill(context: NativeRuntimeContextSnapshot, r
   if (result.sha256 !== expected.sha256 || result.byteSize !== expected.size) throw new Error("runner_skill_file_digest_mismatch");
   return { skill: skill.key, versionId: skill.versionId, path: args.path, ...result };
 }
+// Read failures have no ambiguous external effect. Return a bounded terminal
+// receipt so a missing file or rejected path cannot leave the turn pending.
+export async function settleRunnerBridgeRead(read: () => Promise<unknown>) {
+  try { return await read(); } catch (error) {
+    const storageCode = error && typeof error === "object" && "code" in error ? error.code : null;
+    const message = error instanceof Error ? error.message : "";
+    const code = storageCode === "ENOENT" ? "runner_bridge_file_not_found"
+      : /^runner_(workspace|bridge|skill)_[a-z_]+$/.test(message) ? message : "runner_bridge_read_failed";
+    return { outcome: "failed", code, message: "The requested read did not succeed. Check the assigned file or pinned skill and its relative path before continuing." };
+  }
+}
+const workspaceLanes = new Map<string, Promise<void>>();
 export async function executeWorkspaceTool(root: string, name: string, raw: unknown, authorize: () => Promise<void>) {
+  // One local controller owns admitted tools. Serialize each canonical workspace
+  // across calls and agents, including commands, so hash checks and writes form
+  // one critical section. Authority is rechecked after waiting for the lane.
+  const key = await fs.realpath(root), previous = workspaceLanes.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const lane = new Promise<void>(resolve => { release = resolve; });
+  workspaceLanes.set(key, lane);
+  await previous;
+  try { return await executeWorkspaceToolInLane(key, name, raw, authorize); }
+  finally { release(); if (workspaceLanes.get(key) === lane) workspaceLanes.delete(key); }
+}
+async function executeWorkspaceToolInLane(root: string, name: string, raw: unknown, authorize: () => Promise<void>) {
   const input = RUNNER_BRIDGE_SCHEMAS.get(name)!.parse(raw) as Record<string, any>;
   await authorize();
   if (name === "workspace_list") {

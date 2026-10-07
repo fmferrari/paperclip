@@ -2,7 +2,7 @@
 
 Date: 2026-10-02
 
-Status: Experimental self-hosted adapter implemented; real-account acceptance and extended context projection remain unqualified
+Status: Experimental self-hosted adapter and full Runner extension implemented; real-account qualification and remaining limits are recorded in the dated checkpoints below
 
 Branch: `codex/dot-events-prototype`
 
@@ -18,16 +18,16 @@ connection UI. Tests exercise the real Rust Runner and ordinary task status
 finalizer, plus bridge reattachment and missing-checkpoint refusal.
 
 The current supported deployment is self-hosted with a local controller and
-stable public HTTPS. A fresh real-Dot account test of `/mcp/runner` remains
-required before qualification. The earlier account proof covers the reference
-harness's transport only. The complete fault matrix and hosted agent-broker
+stable public HTTPS. The October 7 real-account checkpoint qualifies the dedicated `/mcp/runner`
+path. The earlier account proof covered only the reference harness transport. The complete fault matrix and hosted agent-broker
 qualification below remain future qualification work.
 
-Assigned skill files and third-party MCP bindings are explicitly rejected in
-this version. Automatic approval review blocked their projection to the
-external Dot because it required explicit authorization to expose those
-additional contents. Existing Paperclip semantic tools and admitted agent
-instructions remain available. See [the adapter runbook](../openai-dot-runner.md).
+The original adapter rejected assigned skills and third-party MCP bindings.
+The user subsequently authorized their governed Runner integration. The full
+extension now reads pinned skill files and relays assigned gateway tools.
+Workspace files and sandboxed commands require an explicit per-agent opt-in.
+Automatic inbound attachment staging remains disabled pending separate scope
+approval. See [the adapter runbook](../openai-dot-runner.md).
 
 ## 1. Recommendation
 
@@ -951,3 +951,38 @@ During deployment, macOS exhausted its PostgreSQL shared-memory IDs. One confirm
 User authorized implementation and live qualification of all six expansion areas. Delivery scope: idle request admission with normal run ownership; human assignees and person discovery; authorized cross-task tools; pinned skill reads and assigned MCP gateway relay; explicitly enabled host workspace tools and verified artifacts; truthful capability discovery; rolling lease renewal, pagination and follow-up input. Preserve provider limits for model choice, usage, cost, and unconfirmed global external stopping.
 
 Acceptance: an idle Dot creates a hello task assigned to the responsible person; an assigned Dot reads a pinned skill, uses an authorized assigned gateway tool, produces a verified downloadable file, handles follow-up input, renews its lease, and cannot continue mutations after fencing. Verify replay, company isolation, budget stops and permission denials. Do not reseed the synthetic test-drive from production.
+
+
+### Full Runner acceptance checkpoint
+
+The real Dot created **hello** assigned to the verified responsible human, read
+its pinned synthetic skill, used attributed cross-task comments and documents,
+ran a sandboxed command, incorporated a follow-up comment, renewed its lease,
+and registered a report whose downloaded bytes and SHA-256 matched the receipt.
+A missing initial fixture exposed a definite read exception without a terminal
+receipt; the operator cancelled that run and Dot acknowledged its fence. Read
+failures now settle as bounded errors. A real Rust regression proves that later
+tools and finalization still work after a missing-file error.
+
+Dot then initiated its own **DOT-4** intake through `paperclip_dot_request_turn`,
+created **hello from idle** for the human owner, verified the missing-file error,
+and wrote/read/executed/registered `idle-proof.txt`. The downloaded 20-byte file
+contains `idle-runner-verified` and matches its registered SHA-256. Both
+completion steps succeeded; the normal run exited 0 and the ordinary finalizer
+committed Done. The offer required a direct inbox check; no automation wake was
+observed for that offer. Intake responses now include an available assignment
+and instruct stable same-request polling while admission is pending.
+
+Review also found overlapping hash-based writes and missing lock entries.
+Workspace calls now serialize across the local controller's canonical workspace
+lane; a concurrent-write regression permits one commit and rejects the stale
+edit. The lockfile includes compression and the existing manifest dependencies.
+OpenAPI includes the capability-authenticated pairing preview and redemption
+routes. The expanded API catalog's comparison fixture has been synchronized.
+
+Real Rust/PostgreSQL qualification covers the configured assigned gateway with
+a synthetic service, not a live external app account. Linux command sandboxing,
+hosted/remote controllers, provider-native control and the complete future fault
+matrix remain outside this supported local-controller acceptance. Automatic
+inbound attachment staging remains disabled. Full local suite and fresh PR CI
+are tracked in PR #15414 and are not assumed green from targeted checks.

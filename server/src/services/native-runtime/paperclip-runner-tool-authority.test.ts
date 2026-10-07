@@ -102,7 +102,9 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(38);
+    expect(authority.definitions()).toHaveLength(43);
+    expect(authority.definitions().map(tool => tool.name)).not.toContain("read_chat_attachment");
+    expect(authority.definitions().map(tool => tool.name)).not.toContain("read_current_wake_comments");
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
     expect(questions.description).toContain("Never fabricate answers");
@@ -139,10 +141,8 @@ describe("PaperclipRunnerToolAuthority", () => {
         "list_approvals",
         "get_approval",
         "get_approval_context",
-        READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
         "list_chat_attachments",
         "reuse_chat_attachment",
-        "read_chat_attachment",
       ]),
     );
     const context = await authority.execute({
@@ -249,10 +249,8 @@ describe("PaperclipRunnerToolAuthority", () => {
         executionTargetKind: "local",
       });
     const requiredChatFileTools = [
-      READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
       "list_chat_attachments",
       "reuse_chat_attachment",
-      "read_chat_attachment",
       "register_deliverable",
     ];
 

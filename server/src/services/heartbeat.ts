@@ -24984,6 +24984,7 @@ export function heartbeatService(
                     managedGitHub: !useHostGitHub && githubSelection.configured,
                     managedAiCredentialIdentity: managedAiRuntime?.identity,
                     managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
+                    dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
                     runnerEnvironment: {
                       ...buildNativeProviderEnvironment(
                         adapterEnv,

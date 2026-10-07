@@ -10525,12 +10525,29 @@ export function createToolGatewayService(
           : null;
         const retryingSlackRateLimit = slackRateLimitRetry === "claimed";
         if (recorded.replayed && !retryingSlackRateLimit) {
+          let replayedInvocation = recorded.invocation;
+          if (slackRateLimitRetry === "not_retryable") {
+            const [currentInvocation] = await db
+              .select()
+              .from(toolInvocations)
+              .where(eq(toolInvocations.id, invocationId))
+              .limit(1);
+            if (currentInvocation) replayedInvocation = currentInvocation;
+            if (["authorized", "executing"].includes(replayedInvocation.status)) {
+              throw new ToolGatewayHttpError(
+                409,
+                "The Slack tool invocation is still executing",
+                "tool_invocation_in_progress",
+                { invocationId, replayed: true },
+              );
+            }
+          }
           // Only a provider-confirmed Slack 429 with a future retryAt is an
           // intentional no-op. Policy rate limits and other failures remain
           // visible as errors.
           const replayFailure = slackRateLimitRetry === "deferred"
             ? null
-            : replayedInvocationFailure(recorded.invocation);
+            : replayedInvocationFailure(replayedInvocation);
           if (replayFailure) {
             await writeAudit({
               session,
@@ -10570,7 +10587,7 @@ export function createToolGatewayService(
             invocationId,
             status: "replayed" as const,
             tool: tool.name,
-            result: recorded.invocation.resultSummary ?? null,
+            result: replayedInvocation.resultSummary ?? null,
           };
         }
         if (accessDecision.decision === "require_approval") {

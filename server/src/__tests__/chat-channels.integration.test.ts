@@ -4434,7 +4434,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await executeConnectorTool(db, binding, "slack_post_message", limited);
     expect(postFetch.mock.calls.filter(call => String(call[0]).endsWith("/chat.postMessage"))).toHaveLength(1);
     await db.update(chatActions).set({ result: { ...limitedAction.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, limitedAction.id));
-    await expect(executeConnectorTool(db, binding, "slack_post_message", limited)).resolves.toMatchObject({ status: "completed" });
+    let markRetryStarted!: () => void;
+    let releaseRetryResponse!: () => void;
+    const retryStarted = new Promise<void>((resolve) => { markRetryStarted = resolve; });
+    const retryResponseGate = new Promise<void>((resolve) => { releaseRetryResponse = resolve; });
+    postFetch.mockImplementation(async (input) => {
+      if (String(input).endsWith("/chat.postMessage")) {
+        markRetryStarted();
+        await retryResponseGate;
+        return Response.json({ ok: true, channel: "CTOOLS", ts: "7200.2" });
+      }
+      if (String(input).endsWith("/conversations.create")) return Response.json({ ok: true, channel: { id: "CNEWCHANNEL" } });
+      return fetched(input);
+    });
+    const retryWinner = executeConnectorTool(db, binding, "slack_post_message", limited);
+    await retryStarted;
+    await expect(executeConnectorTool(db, binding, "slack_post_message", limited)).rejects.toMatchObject({
+      status: 409,
+      reasonCode: "tool_invocation_in_progress",
+    });
+    releaseRetryResponse();
+    await expect(retryWinner).resolves.toMatchObject({ status: "completed" });
     expect(postFetch.mock.calls.filter(call => String(call[0]).endsWith("/chat.postMessage"))).toHaveLength(2);
     const verifiedBotId = (await resolveSlackTaskAuthority(db, binding)).endpoint.botExternalId;
     const uncertain = { ...send, text: "May already have arrived", idempotencyKey: randomUUID() };

@@ -10520,14 +10520,15 @@ export function createToolGatewayService(
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
-        const retryingSlackRateLimit = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
+        const slackRateLimitRetry = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
-          : false;
+          : null;
+        const retryingSlackRateLimit = slackRateLimitRetry === "claimed";
         if (recorded.replayed && !retryingSlackRateLimit) {
-          // Slack has its own retry-at gate. A replay before that deadline is
-          // an intentional no-op; keep that policy instead of surfacing the
-          // stored rate-limit result as a terminal gateway error.
-          const replayFailure = recorded.invocation.status === "rate_limited" && tool.providerType === "paperclip_slack_chat"
+          // Only a provider-confirmed Slack 429 with a future retryAt is an
+          // intentional no-op. Policy rate limits and other failures remain
+          // visible as errors.
+          const replayFailure = slackRateLimitRetry === "deferred"
             ? null
             : replayedInvocationFailure(recorded.invocation);
           if (replayFailure) {

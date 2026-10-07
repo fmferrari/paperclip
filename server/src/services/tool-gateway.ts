@@ -374,6 +374,12 @@ function replayedInvocationFailure(
         replayed: true,
       });
     case "denied":
+      if (reasonCode === "rate_limited") {
+        return new ToolGatewayHttpError(429, message, reasonCode, {
+          invocationId: invocation.id,
+          replayed: true,
+        });
+      }
       return new ToolGatewayHttpError(403, message, reasonCode, {
         invocationId: invocation.id,
         replayed: true,

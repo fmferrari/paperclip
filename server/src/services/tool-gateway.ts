@@ -10217,11 +10217,7 @@ export function createToolGatewayService(
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
         if (recorded.replayed) {
-          // Slack retries reconcile uncertain delivery through slack_delivery;
-          // preserve its established idempotent replay contract.
-          const replayFailure = tool.providerType === "paperclip_slack_chat"
-            ? null
-            : replayedInvocationFailure(recorded.invocation);
+          const replayFailure = replayedInvocationFailure(recorded.invocation);
           if (replayFailure) {
             await writeAudit({
               session,

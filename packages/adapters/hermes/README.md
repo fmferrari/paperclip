@@ -284,7 +284,7 @@ Conditional sections:
 Paperclip                          Hermes Agent
 ┌──────────────────┐               ┌──────────────────┐
 │  Heartbeat       │               │                  │
-│  Scheduler       │───execute()──▶│  hermes chat -q  │
+│  Scheduler       │───execute()──▶│  hermes chat     │
 │                  │               │                  │
 │  Issue System    │               │  30+ Tools       │
 │  Comment Wakes   │◀──results─────│  Memory System   │
@@ -296,8 +296,10 @@ Paperclip                          Hermes Agent
 └──────────────────┘               └──────────────────┘
 ```
 
-The adapter spawns Hermes Agent's CLI in single-query mode (`-q`). Hermes
-processes the task using its full tool suite, then exits. The adapter:
+The adapter spawns Hermes Agent's CLI in single-query mode. It sends the
+query through stdin with `--query-file -` instead of placing the full task
+context in an argument. This avoids Linux `E2BIG` failures on large tasks.
+Hermes processes the task using its full tool suite, then exits. The adapter:
 
 1. **Captures** stdout/stderr and parses token usage, session IDs, and cost
 2. **Parses** raw output into structured `TranscriptEntry` objects (tool cards with status icons)

@@ -516,8 +516,9 @@ export async function execute(
   if (envWakeReason) env.PAPERCLIP_WAKE_REASON = envWakeReason;
   const envCommentId = cfgString(ctxContext.commentId) || cfgString(ctxContext.wakeCommentId) || cfgString(ctx.config?.commentId);
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctxContext.paperclipWake);
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  // The structured wake payload is already included in the stdin prompt.
+  // Do not duplicate it in the child environment: a large comment window can
+  // exceed Linux's per-environment-string limit and fail spawn() with E2BIG.
 
   // ── Resolve working directory ──────────────────────────────────────────
   const cwd =

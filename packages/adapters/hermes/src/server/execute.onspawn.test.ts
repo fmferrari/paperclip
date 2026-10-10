@@ -208,4 +208,31 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
   });
+
+  it("keeps a large structured wake payload out of the child environment", async () => {
+    const { ctx } = makeCtx();
+    const largeComment = "x".repeat(140_000);
+    ctx.context.paperclipWake = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Large wake",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: largeComment, createdAt: "2026-10-10T00:00:00.000Z" }],
+      fallbackFetchNeeded: false,
+    } as any;
+
+    await execute(ctx as any);
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+    const opts = lastCall[3] as { env: Record<string, string>; stdin?: string };
+    expect(opts.env.PAPERCLIP_WAKE_PAYLOAD_JSON).toBeUndefined();
+    expect(opts.stdin?.length).toBeGreaterThan(largeComment.length);
+  });
 });

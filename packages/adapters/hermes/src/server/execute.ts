@@ -1,11 +1,14 @@
 /**
  * Server-side execution logic for the Hermes Agent adapter.
  *
- * Spawns `hermes chat -q "..." -Q` as a child process, streams output,
- * and returns structured results to Paperclip.
+ * Spawns `hermes chat --query-file - -Q` as a child process, streams output,
+ * and returns structured results to Paperclip. The query is sent through
+ * stdin so large Paperclip task contexts cannot exceed Linux's per-argument
+ * limit (E2BIG / MAX_ARG_STRLEN).
  *
  * Verified CLI flags (hermes chat):
  *   -q/--query         single query (non-interactive)
+ *   --query-file       read the query from a file; '-' reads stdin
  *   -Q/--quiet         quiet mode (no banner/spinner, only response + session_id)
  *   -m/--model         model name (e.g. anthropic/claude-sonnet-4)
  *   -t/--toolsets      comma-separated toolsets to enable
@@ -441,7 +444,11 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
+  // FMF-79 exposed that passing the complete task context as `-q <prompt>`
+  // can fail before Hermes starts: Linux caps a single argv element at
+  // MAX_ARG_STRLEN. Hermes supports `--query-file -`, so keep the prompt out
+  // of argv and provide it via the child process stdin instead.
+  const args: string[] = ["chat", "--query-file", "-"];
   if (useQuiet) args.push("-Q");
 
   if (model) {
@@ -560,6 +567,7 @@ export async function execute(
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
+    stdin: prompt,
     timeoutSec,
     graceSec,
     onLog: wrappedOnLog,

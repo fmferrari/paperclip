@@ -100,8 +100,12 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const mocked = vi.mocked(serverUtils.runChildProcess);
     expect(mocked.mock.calls.length).toBeGreaterThan(0);
     const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+    const args = lastCall[2] as string[];
     const opts = lastCall[3] as Record<string, unknown>;
     expect(opts.onSpawn).toBe(onSpawn);
+    expect(args).toEqual(expect.arrayContaining(["chat", "--query-file", "-"]));
+    expect(args).not.toContain(expect.stringContaining("You are "));
+    expect(typeof opts.stdin).toBe("string");
   });
 
   it("runChildProcess opts type includes onSpawn", () => {

@@ -2042,7 +2042,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
-  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
+  "link or request a pending approval, assign a distinct reviewer agent or a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
@@ -4529,6 +4529,18 @@ export function issueRoutes(
     )
       return null;
 
+    // A distinct agent assignment is an actionable review path: the update
+    // queues that agent through the ordinary assignee wake route. Requiring an
+    // explicit change prevents an agent from declaring itself "in review"
+    // without actually handing the work to a reviewer.
+    const requestedAssigneeAgentId = input.updateFields.assigneeAgentId;
+    if (
+      typeof requestedAssigneeAgentId === "string" &&
+      requestedAssigneeAgentId.trim().length > 0 &&
+      requestedAssigneeAgentId !== input.actorAgentId
+    )
+      return null;
+
     const nextExecutionState =
       input.updateFields.executionState === undefined
         ? input.existing.executionState
@@ -4564,6 +4576,7 @@ export function issueRoutes(
       validReviewPaths: [
         "pending_issue_thread_interaction",
         "linked_pending_approval",
+        "distinct_assignee_agent_id",
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",

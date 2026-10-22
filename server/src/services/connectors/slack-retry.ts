@@ -7,7 +7,8 @@ import {
 } from "./slack-authority.js";
 
 /** Only a definite provider rate-limit rejection can be retried automatically.
- * A fresh policy decision and live authority check precede this atomic claim.
+ * An uncertain write may return its durable pending state without resending.
+ * A fresh policy decision and live authority check precede this classification.
  * Never reopen an uncertain call or reuse approval from another run. */
 export async function claimSlackRateLimitRetry(
   db: Db,
@@ -40,14 +41,23 @@ export async function claimSlackRateLimitRetry(
           eq(chatActions.companyId, binding.companyId),
           eq(chatActions.endpointId, authority.endpoint.id),
           eq(chatActions.kind, "slack_tool_write"),
-          eq(chatActions.status, "failed"),
           sql`${chatActions.payload}->>'invocationId' = ${invocation.id}`,
         ),
       )
       .for("update");
+    if (!action || action.payload.revision !== authority.revision)
+      return "not_retryable" as const;
+    // An uncertain write must pass through the Slack idempotency record again
+    // so the caller receives its unresolved state. The write path returns that
+    // state without sending another request; reconciliation remains explicit.
     if (
-      !action ||
-      action.payload.revision !== authority.revision ||
+      action.status === "uncertain" &&
+      action.result?.code === "slack_transport_uncertain" &&
+      invocation.errorCode === "slack_transport_uncertain"
+    )
+      return "replay_uncertain" as const;
+    if (
+      action.status !== "failed" ||
       action.result?.code !== "slack_rate_limited" ||
       typeof action.result.retryAt !== "string"
     )

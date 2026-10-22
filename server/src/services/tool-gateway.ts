@@ -10784,6 +10784,7 @@ export function createToolGatewayService(
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : null;
         const retryingSlackRateLimit = slackRateLimitRetry === "claimed";
+        const replayingSlackUncertainDelivery = slackRateLimitRetry === "replay_uncertain";
         const gitHubPublicationReplay = recorded.replayed &&
           tool.providerType === "paperclip_github_chat" &&
           ["comment", "update_comment", "submit_review"].includes(tool.upstreamToolName ?? "") &&
@@ -10835,10 +10836,10 @@ export function createToolGatewayService(
               );
             }
           }
-          // Only a provider-confirmed Slack 429 with a future retryAt is an
-          // intentional no-op. Policy rate limits and other failures remain
-          // visible as errors.
-          const replayFailure = slackRateLimitRetry === "deferred"
+          // Only a provider-confirmed Slack 429 with a future retryAt and an
+          // uncertain write with a durable action are intentional no-ops.
+          // Policy rate limits and other failures remain visible as errors.
+          const replayFailure = slackRateLimitRetry === "deferred" || replayingSlackUncertainDelivery
             ? null
             : replayedInvocationFailure(replayedInvocation);
           if (replayFailure) {

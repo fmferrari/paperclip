@@ -1,3 +1,5 @@
+import { applyPendingMigrations } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,11 +12,11 @@ import { mcpAttachmentUploads, mcpFileTickets, principalPermissionGrants, heartb
 import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto";
 import express, { type Request } from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, mcpEventAdmissions, mcpEventDeliveries, mcpEventSubscriptions, createDb, authUsers, companies, companyLogos, assets, companyMemberships, mcpOauthTokens, mcpOauthRequests, mcpOauthGrants, mcpOauthClients, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions, mcpMutationReceipts, agents, issues, issueComments, instanceUserRoles } from "@paperclipai/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { createPublicMcpOAuth, publicMcpConfig, hashMcpSecret, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
+import { createPublicMcpOAuth, publicMcpConfig, hashMcpSecret, DEVICE_GRANT, McpOAuthError } from "../services/public-mcp/oauth.js";
 import { McpApiError, createMcpApiDispatch, createPublicMcpExecutor, publicMcpCapabilities } from "../services/public-mcp/capabilities.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "../routes/public-mcp.js";
 import { authorizationService } from "../services/authorization.js";
@@ -31,9 +33,13 @@ import { cloudWarmStandbyMiddleware } from "../middleware/cloud-warm-standby.js"
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 import { createPublicMcpEvents, publicMcpEventDefinitions } from "../services/public-mcp/events.js";
+import { createDotRunnerMcpBridge } from "../services/public-mcp/dot-runner.js";
+import { DotHarnessDriver } from "../../../packages/paperclip-runner/src/drivers/dot/dot-harness-driver.js";
+import { HarnessDriverBackend } from "../../../packages/paperclip-runner/src/backends/harness-driver-backend.js";
 import { eventFetch, signingKey, type EventFetch } from "../services/public-mcp/event-webhooks.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_PUBLIC_MCP_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Public MCP database checks unavailable: ${support.reason}`);
 const config = { origin: "https://paperclip.example", resource: "https://paperclip.example/mcp/paperclip" };
 const redirectUri = "https://client.example/callback";
@@ -57,13 +63,14 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
   let oauth: ReturnType<typeof createPublicMcpOAuth>;
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
-    temp = await startEmbeddedPostgresTestDatabase("paperclip-public-mcp-");
-    db = createDb(temp.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else temp = await startEmbeddedPostgresTestDatabase("paperclip-public-mcp-");
+    db = createDb(externalUrl ?? temp.connectionString);
     oauth = createPublicMcpOAuth(db, config);
     expect(await oauth.isEnabled()).toBe(false);
     await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true });
   }, 90000);
-  afterAll(async () => { await temp?.cleanup(); vi.unstubAllEnvs(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temp?.cleanup(); vi.unstubAllEnvs(); });
 
   it("keeps public MCP and discovery out of SQL and SPA fallback until Cloud claim", async () => {
     let standby = true;
@@ -476,6 +483,15 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     await expect(oauth.authenticate(next.access_token)).rejects.toThrow();
   });
 
+  it.each([new Date(0), null])("rejects personal refresh tokens with invalid expiry %s", async expiresAt => {
+    const f = await fixture();
+    const [stored] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(f.tokens.refresh_token!)));
+    expect(stored!.expiresAt!.getTime() - Date.now()).toBeGreaterThan(29 * 24 * 60 * 60_000);
+    await db.update(mcpOauthTokens).set({ expiresAt }).where(eq(mcpOauthTokens.id, stored!.id));
+    await expect(oauth.token({ grant_type: "refresh_token", client_id: f.client.client_id,
+      resource: config.resource, refresh_token: f.tokens.refresh_token })).rejects.toThrow();
+  });
+
   it("rejects token expiry, revocation and membership loss on the next call", async () => {
     const f = await fixture();
     await db.update(mcpOauthTokens).set({ expiresAt: new Date(0) }).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(f.tokens.access_token)));
@@ -841,7 +857,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
 
   it("completes OAuth and concurrent upload retries with a one-connection pool", async () => {
     const originalDb = db, originalOauth = oauth;
-    db = createDb(temp.connectionString, { maxConnections: 1 });
+    db = createDb(externalUrl ?? temp.connectionString, { maxConnections: 1 });
     oauth = createPublicMcpOAuth(db, config);
     let cleanup: (() => Promise<void>) | undefined;
     try {
@@ -934,6 +950,31 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect((await put(bytes)).status).toBe(200);
       expect((await f.call("paperclip_list_deliverables", { taskId: f.issue.id })).attachments).toHaveLength(1);
     } finally { await f.cleanup(); }
+  });
+
+  it.each(["unexpected_storage", "oauth_shaped_storage"])("preserves retryable upload storage failures without confusing them with session authority (%s)", async kind => {
+    const f = await expandedFixture();
+    let restoreStorage = () => {};
+    try {
+      const bytes = Buffer.from("synthetic storage failure");
+      const args = { taskId: f.issue.id, requestId: randomUUID(), filename: "data.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+      const prepared = await f.call("paperclip_get_upload_url", args);
+      const failure = kind === "oauth_shaped_storage" ? new McpOAuthError("access_denied", "SYNTHETIC_STORAGE_FAILURE_CANARY", 409)
+        : new Error("SYNTHETIC_STORAGE_FAILURE_CANARY");
+      const putSpy = vi.spyOn(f.storage, "putFile").mockRejectedValueOnce(failure);
+      restoreStorage = () => { putSpy.mockRestore(); };
+      const app = express(); app.use(f.transfers.router);
+      const url = new URL(prepared.url as string);
+      const response = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes);
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ error: "transfer_unavailable", message: "Transfer could not be confirmed. Retry the same upload identity, or request another download link." });
+      expect(JSON.stringify(response.body)).not.toContain("SYNTHETIC_STORAGE_FAILURE_CANARY");
+      const [upload] = await db.select().from(mcpAttachmentUploads).where(eq(mcpAttachmentUploads.id, prepared.uploadId as string));
+      expect(upload!.attachmentId).toBeNull();
+      expect((await f.call("paperclip_list_deliverables", { taskId: f.issue.id })).attachments).toHaveLength(0);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.company.id), eq(activityLog.action, "issue.attachment_added")))).toHaveLength(0);
+    } finally { restoreStorage(); await f.cleanup(); }
   });
 
   it("rejects authority lost during storage and safely reclaims the orphaned object", async () => {
@@ -1065,8 +1106,8 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     }
     await expect(oauth.authorize(input)).resolves.toContain("/mcp-connect/");
   });
-  async function eventFixture(cloudOrigin?: string) {
-    const f = await fixture("member", false);
+  async function eventFixture(cloudOrigin?: string, write = false) {
+    const f = await fixture("member", write);
     const principal = await oauth.authenticate(f.tokens.access_token);
     const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Event fixture", status: "todo" }).returning();
     let clock = Date.now();
@@ -1105,6 +1146,73 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     return { ...f, principal, task: task!, service, input, received, secret, activity, dispatch, options,
       advance(ms: number) { clock += ms; }, setStatus(value: number) { status = value; }, denyCloud() { cloudAllowed = false; }, duringVerification(fn: () => Promise<void>) { duringVerification = fn; }, badChallenge() { goodChallenge = false; }, now: () => clock };
   }
+
+  it("Dot prototype: OAuth → signed wakeup → native runner tools → result, with revocation", async () => {
+    const f = await eventFixture(undefined, true);
+    const events = createPublicMcpEvents(db, oauth, f.dispatch, { ...f.options, enableDotPrototype: true });
+    const extension = createDotRunnerMcpBridge();
+    const identity = { companyId: f.company.id, agentId: randomUUID(), issueId: f.task.id, runId: randomUUID(), sessionId: randomUUID() };
+    const documents: string[] = [];
+    const driver = new DotHarnessDriver({
+      identity, principal: { companyId: f.company.id, grantId: f.principal.grant.id }, expiresAt: f.now() + 60_000, now: f.now,
+      assertAuthority: async () => { await oauth.authorizeGrant(f.principal.grant.id); },
+      tools: [{ name: "write_document", description: "Save a report on this assignment", inputSchema: { type: "object", properties: { body: { type: "string" } }, required: ["body"], additionalProperties: false } }],
+      executeTool: async ({ name, arguments: args }) => {
+        if (args.uncertain) throw new Error("Projected tool response was lost");
+        expect(name).toBe("write_document"); documents.push(String(args.body)); return { saved: true };
+      },
+      publish: async assignment => { await f.activity("dot.work_available", { ...assignment, privateText: "MUST NOT LEAVE IN EVENT" }); },
+    });
+    const unregister = extension.register(driver, f.principal.grant.id);
+    const backend = new HarnessDriverBackend(driver);
+    const session = await backend.openSession({ identity });
+    const app = express(); app.use(express.json());
+    app.use(publicMcpIngressRoutes(oauth, createPublicMcpExecutor(db, oauth, f.dispatch), events, extension));
+    const meta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} };
+    const rpc = (method: string, params: Record<string, unknown> = {}, token = f.tokens.access_token) => request(app).post("/mcp/paperclip")
+      .set("Authorization", `Bearer ${token}`).set("MCP-Protocol-Version", "2026-07-28").set("Mcp-Method", method)
+      .set("Mcp-Name", String(params.name ?? "")).send({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: meta } });
+    const tool = async (name: string, args: Record<string, unknown>) => (await rpc("tools/call", { name, arguments: args })).body.result;
+    try {
+      expect((await rpc("server/discover")).body.result.capabilities).toHaveProperty("events");
+      expect((await rpc("events/list")).body.result.events.map((e: { name: string }) => e.name)).toContain("paperclip.dot.work_available");
+      const subscription = { ...f.input, name: "paperclip.dot.work_available", arguments: { companyId: f.company.id, taskId: f.task.id } };
+      expect((await rpc("events/subscribe", subscription)).body.result.id).toBeTruthy();
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Save a competitor research report." } });
+      await events.tick();
+      const deliveries = f.received.filter(r => r.body.eventId);
+      expect(deliveries).toHaveLength(1);
+      expect(deliveries[0]!.body.data).toMatchObject({ runId: identity.runId, agentId: identity.agentId, turnId });
+      expect(JSON.stringify(deliveries)).not.toContain("MUST NOT LEAVE");
+      const base = { companyId: identity.companyId, runId: identity.runId, turnId };
+      const call = (name: string, args = {}, requestId = randomUUID()) => tool(name, { ...base, requestId, ...args });
+      expect((await tool("paperclip_dot_inbox", { companyId: identity.companyId })).structuredContent.assignments).toHaveLength(1);
+      expect((await call("paperclip_dot_read")).structuredContent.result.message.text).toContain("competitor");
+      expect((await call("paperclip_dot_accept")).isError).toBe(false);
+      const writeId = randomUUID();
+      for (let retry = 0; retry < 2; retry++) expect((await call("paperclip_dot_tool", { name: "write_document", arguments: { body: "Competitor report" } }, writeId)).isError).toBe(false);
+      expect(documents).toEqual(["Competitor report"]);
+      const unknown = await call("paperclip_dot_tool", { name: "write_document", arguments: { uncertain: true } });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.structuredContent.outcome).toBe("unknown");
+      expect((await call("paperclip_dot_progress", { text: "Saved the report." })).isError).toBe(false);
+      const other = await fixture();
+      expect((await rpc("tools/call", { name: "paperclip_dot_read", arguments: { ...base, requestId: randomUUID() } }, other.tokens.access_token)).body.result.isError).toBe(true);
+      const result = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Report saved.",
+        completionClaim: { contractRevision: "dot-prototype-v1", objectiveSatisfied: true, criteria: [], remainingWork: [] },
+        evidence: [], verification: [], attentionRequests: [], artifacts: [] };
+      expect((await call("paperclip_dot_finish", { result })).isError).toBe(false);
+      const transcript = [];
+      for await (const event of session.events()) transcript.push(event);
+      expect(transcript.filter(e => e.eventType === "run.result.proposed")).toHaveLength(1);
+      expect(await session.result()).toMatchObject({ result });
+      expect(await session.usage?.()).toBeNull();
+      // The person's normal tools remain usable while Dot has no active assignment.
+      expect((await tool("paperclip_connection", {})).structuredContent.companyId).toBe(identity.companyId);
+      await oauth.revokeConnection(f.principal.grant.id, f.actor.userId!);
+      expect((await rpc("tools/list")).status).toBe(401);
+    } finally { unregister(); await session.close({ reason: "prototype finished" }).catch(() => {}); await events.stop(); }
+  });
 
   it("discovers MCP 2.0 events, validates metadata/headers, and preserves legacy tools", async () => {
     const f = await eventFixture();

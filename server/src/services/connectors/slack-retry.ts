@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "../chat-work-notifications.js";
 import { and, eq, sql, inArray } from "drizzle-orm";
 import { chatActions, toolInvocations, type Db } from "@paperclipai/db";
 import {
@@ -49,10 +50,12 @@ export async function claimSlackRateLimitRetry(
       action.payload.revision !== authority.revision ||
       action.result?.code !== "slack_rate_limited" ||
       typeof action.result.retryAt !== "string"
-    ) return "not_retryable" as const;
+    )
+      return "not_retryable" as const;
     const retryAt = Date.parse(action.result.retryAt);
     if (!Number.isFinite(retryAt)) return "not_retryable" as const;
     if (retryAt > Date.now()) return "deferred" as const;
+    await notifyChatPublicationWork(tx);
     await tx
       .update(chatActions)
       .set({ status: "received", updatedAt: new Date() })

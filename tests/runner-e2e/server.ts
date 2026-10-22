@@ -1,6 +1,11 @@
+import { parseFinalizationCrashBinding, readFinalizationCrashBoundary, type FinalizationCrashBinding } from "./finalization-crash-boundary.js";
+import { parseRestartRunnerIdentity, type RestartRunnerIdentity } from "./process-tree-owner.js";
+import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
+import { runnerMatrix } from "./catalog.js";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
+import { prepareSourceServerDependencies } from "./source-startup.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -26,6 +31,12 @@ const configPath = required("PAPERCLIP_CONFIG");
 const port = required("PAPERCLIP_RUNNER_E2E_PORT");
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts");
+const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
+const selectedExecutions = usesInstalledCli(process.env) ? executionIds.map(id => {
+  const execution = runnerMatrix.find(row => row.id === id);
+  if (!execution) throw new Error("Unknown installed CLI proof execution");
+  return execution;
+}) : [];
 const {
   controlDirectory,
   restartRequestPath,
@@ -89,6 +100,8 @@ const definedServerEnvironment = Object.fromEntries(
   ),
 );
 
+await prepareSourceServerDependencies(repositoryRoot, definedServerEnvironment, usesInstalledCli(process.env));
+
 await Promise.all([
   mkdir(path.dirname(logPath), { recursive: true }),
   mkdir(controlDirectory, { recursive: true, mode: 0o700 }),
@@ -128,9 +141,11 @@ async function startServer() {
   if (shutdownRequested()) {
     throw new Error("Refusing to start Paperclip after wrapper shutdown");
   }
+  // Recheck bytes and dependency resolution on every controller restart.
+  const installed = await verifyInstalledCli(process.env, selectedExecutions);
   const candidate = spawn(
     process.execPath,
-    installedRelease?.args ?? runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
+    installed ? [installed.entry, "onboard", "--yes", "--run"] : runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
     {
       cwd: installedRelease?.cwd ?? repositoryRoot,
       env: definedServerEnvironment,
@@ -237,6 +252,8 @@ async function waitForHealthToStop() {
 
 interface RestartRequest {
   requestId: string;
+  preserveRunner?: RestartRunnerIdentity;
+  crashAfterResult?: FinalizationCrashBinding;
 }
 
 async function readRestartRequest(): Promise<RestartRequest | null> {
@@ -262,13 +279,18 @@ async function readRestartRequest(): Promise<RestartRequest | null> {
   ) {
     return null;
   }
-  return { requestId };
+  const preserveRunner = (value as { preserveRunner?: unknown }).preserveRunner;
+  const crashAfterResult = (value as { crashAfterResult?: unknown }).crashAfterResult;
+  if (crashAfterResult !== undefined && preserveRunner !== undefined) throw new Error("A finalization crash cannot preserve a running provider");
+  return { requestId, ...(preserveRunner === undefined ? {} : { preserveRunner: parseRestartRunnerIdentity(preserveRunner) }),
+    ...(crashAfterResult === undefined ? {} : { crashAfterResult: parseFinalizationCrashBinding(crashAfterResult) }) };
 }
 
 async function writeRestartAck(
   requestId: string,
   status: "ready" | "failed",
   message?: string,
+  crashBoundary?: Awaited<ReturnType<typeof readFinalizationCrashBoundary>>,
 ) {
   const temporaryAckPath = `${restartAckPath}.${process.pid}.tmp`;
   await writeFile(
@@ -278,18 +300,26 @@ async function writeRestartAck(
       status,
       completedAt: new Date().toISOString(),
       ...(message ? { message } : {}),
+      ...(crashBoundary ? { crashBoundary } : {}),
     })}\n`,
     { encoding: "utf8", mode: 0o600 },
   );
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer(requestId: string) {
+async function restartServer({ requestId, preserveRunner, crashAfterResult }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
   if (!previous) throw new Error("No Paperclip server is available to restart");
-  await stopServer(previous);
+  const crashBoundary = crashAfterResult ? await readFinalizationCrashBoundary(async route => {
+    const response = await fetch(`http://127.0.0.1:${port}${route}`, { signal: AbortSignal.timeout(5_000), cache: "no-store" });
+    if (!response.ok) throw new Error("Finalization crash boundary could not be read");
+    return response.json();
+  }, crashAfterResult) : undefined;
+  if (crashBoundary) await stopServer.crashForRestart(previous);
+  else if (preserveRunner) await stopServer.forRestart(previous, preserveRunner);
+  else await stopServer(previous);
   if (child === previous) child = null;
   // Do not mistake an orphaned old server for a healthy replacement. The port
   // must stop answering before the next launcher is allowed to start.
@@ -304,7 +334,7 @@ async function restartServer(requestId: string) {
   if (shutdownRequested()) {
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
-  await writeRestartAck(requestId, "ready");
+  await writeRestartAck(requestId, "ready", undefined, crashBoundary);
   appendLog(`Restart request ${requestId}: Paperclip is healthy\n`);
   activeRestartRequestId = null;
 }
@@ -339,13 +369,12 @@ async function supervise() {
     const request = await readRestartRequest();
     if (request && request.requestId !== lastRestartRequestId) {
       lastRestartRequestId = request.requestId;
-      await restartServer(request.requestId);
+      await restartServer(request);
     }
     await delay(200);
   }
 
-  const running = child;
-  if (running) await stopServer(running, shutdownSignal ?? "SIGTERM");
+  await stopServer.stopAll(shutdownSignal ?? "SIGTERM");
 }
 
 let exitCode = 0;
@@ -364,15 +393,10 @@ try {
       );
     }
   }
-  const running = child;
-  if (running) {
-    try {
-      await stopServer(running);
-    } catch (stopError) {
-      appendLog(
-        `Failed to stop Paperclip after supervisor failure: ${stopError instanceof Error ? stopError.message : String(stopError)}\n`,
-      );
-    }
+  try {
+    await stopServer.stopAll();
+  } catch (stopError) {
+    appendLog(`Failed to stop Paperclip after supervisor failure: ${stopError instanceof Error ? stopError.message : String(stopError)}\n`);
   }
 }
 

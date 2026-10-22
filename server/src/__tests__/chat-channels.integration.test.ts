@@ -9047,7 +9047,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(executeConnectorTool(db, binding, "slack_post_message", uncertain)).rejects.toMatchObject({ details: { state: "uncertain" } });
     const [uncertainAction] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.providerActionId, `slack-tool:${binding.issueId}:${uncertain.idempotencyKey}`)));
     const countBefore = postFetch.mock.calls.length;
-    await executeConnectorTool(db, binding, "slack_post_message", uncertain);
+    await expect(executeConnectorTool(db, binding, "slack_post_message", uncertain)).resolves.toMatchObject({
+      status: "replayed",
+      result: {
+        actionId: uncertainAction.id,
+        state: "uncertain",
+        instruction: expect.stringContaining("Inspect delivery before reconciling"),
+      },
+    });
     expect(postFetch.mock.calls).toHaveLength(countBefore);
     const receiptSettled = vi.fn();
     const unsubscribeReceipt = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatPublications, receiptSettled);

@@ -14,7 +14,7 @@ import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl, callCogneeCloud } from "./cognee-connection.js";
 import { HttpError } from "../errors.js";
-import { claimSlackRateLimitRetry } from "./connectors/slack-retry.js";
+import { resolveSlackInvocationRetry } from "./connectors/slack-retry.js";
 import { resolveSlackTaskAuthority } from "./connectors/slack-authority.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { slackToolsForSession } from "./connectors/slack-catalog.js";
@@ -10780,11 +10780,12 @@ export function createToolGatewayService(
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
-        const slackRateLimitRetry = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
-          ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
+        const slackInvocationRetry = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
+          ? await resolveSlackInvocationRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : null;
-        const retryingSlackRateLimit = slackRateLimitRetry === "claimed";
-        const replayingSlackUncertainDelivery = slackRateLimitRetry === "replay_uncertain";
+        const retryingSlackRateLimit = slackInvocationRetry === "claimed";
+        const slackUncertainReplay = typeof slackInvocationRetry === "object" ? slackInvocationRetry : null;
+        const replayingSlackUncertainDelivery = slackUncertainReplay?.kind === "replay_uncertain";
         const gitHubPublicationReplay = recorded.replayed &&
           tool.providerType === "paperclip_github_chat" &&
           ["comment", "update_comment", "submit_review"].includes(tool.upstreamToolName ?? "") &&
@@ -10820,7 +10821,7 @@ export function createToolGatewayService(
           if (gitHubPublicationReplay && !gitHubReplayPolicyAllowed)
             throw new ToolGatewayHttpError(policyErrorStatus(accessDecision), accessDecision.explanation, accessDecision.reasonCode);
           let replayedInvocation = recorded.invocation;
-          if (slackRateLimitRetry === "not_retryable") {
+          if (slackInvocationRetry === "not_retryable") {
             const [currentInvocation] = await db
               .select()
               .from(toolInvocations)
@@ -10839,7 +10840,7 @@ export function createToolGatewayService(
           // Only a provider-confirmed Slack 429 with a future retryAt and an
           // uncertain write with a durable action are intentional no-ops.
           // Policy rate limits and other failures remain visible as errors.
-          const replayFailure = slackRateLimitRetry === "deferred" || replayingSlackUncertainDelivery
+          const replayFailure = slackInvocationRetry === "deferred" || replayingSlackUncertainDelivery
             ? null
             : replayedInvocationFailure(replayedInvocation);
           if (replayFailure) {
@@ -10871,17 +10872,20 @@ export function createToolGatewayService(
             details: {
               invocationId,
               decision: "allow",
-              reasonCode: "idempotent_replay",
+              reasonCode: replayingSlackUncertainDelivery
+                ? "slack_delivery_uncertain_replay"
+                : "idempotent_replay",
               tool: tool.name,
               ...toolAuditMetadata(tool),
               replayed: true,
+              ...(replayingSlackUncertainDelivery ? { deliveryState: "uncertain" } : {}),
             },
           });
           return {
             invocationId,
             status: "replayed" as const,
             tool: tool.name,
-            result: replayedInvocation.resultSummary ?? null,
+            result: slackUncertainReplay?.result ?? replayedInvocation.resultSummary ?? null,
           };
         }
         if (accessDecision.decision === "require_approval") {

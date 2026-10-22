@@ -6,11 +6,14 @@ import {
   type SlackTaskBinding,
 } from "./slack-authority.js";
 
+export const SLACK_UNCERTAIN_DELIVERY_INSTRUCTION =
+  "Do not retry with another key. Inspect delivery before reconciling an uncertain result.";
+
 /** Only a definite provider rate-limit rejection can be retried automatically.
  * An uncertain write may return its durable pending state without resending.
  * A fresh policy decision and live authority check precede this classification.
  * Never reopen an uncertain call or reuse approval from another run. */
-export async function claimSlackRateLimitRetry(
+export async function resolveSlackInvocationRetry(
   db: Db,
   binding: SlackTaskBinding,
   invocationId: string,
@@ -55,7 +58,14 @@ export async function claimSlackRateLimitRetry(
       action.result?.code === "slack_transport_uncertain" &&
       invocation.errorCode === "slack_transport_uncertain"
     )
-      return "replay_uncertain" as const;
+      return {
+        kind: "replay_uncertain" as const,
+        result: {
+          actionId: action.id,
+          state: "uncertain" as const,
+          instruction: SLACK_UNCERTAIN_DELIVERY_INSTRUCTION,
+        },
+      };
     if (
       action.status !== "failed" ||
       action.result?.code !== "slack_rate_limited" ||
